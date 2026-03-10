@@ -949,7 +949,7 @@ async function launchApp() {
 /* ═══════════════════════════════════════════════════
    CLAUDE API
 ═══════════════════════════════════════════════════ */
-async function callClaude(prompt, maxTokens=6000) {
+async function callClaude(prompt, maxTokens=8000) {
   const r = await fetch('https://api.anthropic.com/v1/messages',{
     method:'POST',
     headers:{'Content-Type':'application/json','x-api-key':apiKey,
@@ -957,27 +957,72 @@ async function callClaude(prompt, maxTokens=6000) {
     body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:maxTokens,messages:[{role:'user',content:prompt}]})
   });
   if (!r.ok) throw new Error('API error ' + r.status + ': ' + (await r.text().catch(()=>'')));
-  const d=await r.json(); return d.content[0].text;
+  const d=await r.json();
+  // Check if response was cut off
+  if (d.stop_reason === 'max_tokens') console.warn('Response hit max_tokens limit');
+  return d.content[0].text;
+}
+
+// Attempt to salvage a truncated JSON array by closing it properly
+function repairJSON(raw) {
+  // Strip markdown fences if present
+  let s = raw.replace(/^```json\s*/,'').replace(/```\s*$/,'').trim();
+  // Try direct parse first
+  try { return JSON.parse(s); } catch {}
+  // Try extracting the articles array and closing it
+  try {
+    const start = s.indexOf('{"articles":[');
+    if (start === -1) throw new Error('no articles key');
+    s = s.slice(start);
+    // Find last complete article object — last '}' before truncation
+    const lastClose = s.lastIndexOf('}');
+    if (lastClose === -1) throw new Error('no closing brace');
+    const trimmed = s.slice(0, lastClose + 1) + ']}';
+    return JSON.parse(trimmed);
+  } catch {}
+  // Last resort: find all complete {...} article objects
+  const objects = [];
+  const re = /\{[^{}]*(?:\{[^{}]*\}[^{}]*)?\}/g;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    try { objects.push(JSON.parse(m[0])); } catch {}
+  }
+  if (objects.length) return { articles: objects };
+  throw new Error('Could not repair JSON');
 }
 
 async function generate() {
   const today=new Date().toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
   setBar(40); setStep('Claude is writing your briefing…');
 
-  const prompt=`You are an elite AI news curator for senior product managers. Generate exactly 16 varied, insightful articles about AI that matter to PMs. Today is ${today}.
+  // Shorter body prompts = smaller response = less chance of truncation
+  const prompt=`You are an AI news curator for senior product managers. Generate exactly 12 articles about AI relevant to PMs. Today is ${today}.
 
-Return ONLY valid JSON (no markdown, no fences):
-{"articles":[{"id":"a1","featured":true,"tag":"ai","source":"TechCrunch","hot":true,"title":"Sharp specific headline","excerpt":"2-3 sentence executive summary ~160 chars","body":"<p>Para 1: news and context.</p><p>Para 2: deeper analysis and data.</p><p>Para 3: PM takeaway.</p>","link":"https://techcrunch.com/2026/03/slug","dateLabel":"Today","readTime":"4 min read"}]}
+CRITICAL: Return ONLY a valid, complete JSON object. No markdown. No explanation. The ENTIRE response must be parseable JSON.
 
-Rules: 1 featured:true, 3-4 per tag (ai,pm,tools,research,industry), hot:true max 3 last 48h only, dateLabel: "Just now" "Today" "Yesterday" "2 days ago" "3 days ago" "This week", mix quality sources, every title and excerpt genuinely informative.`;
+{"articles":[
+  {
+    "id":"a1",
+    "featured":true,
+    "tag":"ai",
+    "source":"TechCrunch",
+    "hot":true,
+    "title":"Specific headline about real AI news",
+    "excerpt":"2 sentence summary with concrete detail, under 140 chars.",
+    "body":"<p>Context and what happened.</p><p>Why this matters for PMs and what to watch.</p>",
+    "link":"https://techcrunch.com/2026/03/example",
+    "dateLabel":"Today",
+    "readTime":"4 min read"
+  }
+]}
+
+Generate 12 articles. Distribution: 1 featured:true, 2-3 per tag (ai, pm, tools, research, industry). hot:true for max 2 articles. Keep body to exactly 2 short paragraphs per article to stay within token limits. dateLabel options: "Just now" "Today" "Yesterday" "2 days ago" "This week". Mix sources: TechCrunch, VentureBeat, MIT Tech Review, The Verge, Wired, HBR, Reuters, a16z, Stratechery. Topics: LLM releases, agentic AI, PM strategy, enterprise AI, regulation, tooling.`;
 
   try {
-    const raw=await callClaude(prompt);
+    const raw=await callClaude(prompt, 8000);
     setBar(88); setStep('Parsing articles…');
-    let parsed;
-    try { parsed=JSON.parse(raw); }
-    catch { const m=raw.match(/\{[\s\S]*\}/); if(!m) throw new Error('Could not parse JSON from response'); parsed=JSON.parse(m[0]); }
 
+    const parsed = repairJSON(raw);
     const parsed_articles = (parsed.articles||[]).map((a,i)=>({...a,id:a.id||'g'+i}));
 
     if (!parsed_articles.length) throw new Error('Claude returned 0 articles');
@@ -985,7 +1030,6 @@ Rules: 1 featured:true, 3-4 per tag (ai,pm,tools,research,industry), hot:true ma
     articles = parsed_articles;
     if (!articles.some(a=>a.featured)) articles[0].featured=true;
 
-    // Only cache if we have real articles
     lsSet(LS_ARTS, {articles, ts: Date.now()});
     setBar(100); setStep('Ready!');
     setTimeout(()=>finishLoad(false), 380);
@@ -993,7 +1037,6 @@ Rules: 1 featured:true, 3-4 per tag (ai,pm,tools,research,industry), hot:true ma
   } catch(e) {
     console.error('Generate error:', e);
     setBar(100); setStep('');
-    // Show error screen — don't silently show empty app
     showGenerateError(e.message);
   }
 }
