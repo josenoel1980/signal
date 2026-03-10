@@ -777,6 +777,12 @@ window.addEventListener('DOMContentLoaded', () => {
   const encKey  = lsGet(LS_KEY, null);
   const pinHash = lsGet(LS_PIN_HASH, null);
 
+  // Validate + clean any bad cache on startup
+  const cachedArts = lsGet(LS_ARTS, null);
+  if (cachedArts && (!Array.isArray(cachedArts.articles) || cachedArts.articles.length === 0)) {
+    lsDel(LS_ARTS); // purge empty/corrupt cache
+  }
+
   if (encKey && pinHash) {
     // Returning user — show PIN unlock
     gateShow('gate-unlock');
@@ -913,6 +919,9 @@ function forgotPin() {
    LAUNCH APP
 ═══════════════════════════════════════════════════ */
 async function launchApp() {
+  // Safety: should never reach here without a key
+  if (!apiKey) { gateShow('gate-apikey'); return; }
+
   document.getElementById('gate').style.display='none';
   document.getElementById('loader').style.display='flex';
   document.getElementById('bottom-nav').style.display='block';
@@ -920,15 +929,18 @@ async function launchApp() {
   setBar(10); setStep('Syncing your reading list…');
   await syncDown();
 
-  // Check article cache
+  // Check article cache — only use if fresh AND non-empty
   const cached = lsGet(LS_ARTS, null);
   const now    = Date.now();
-  if (cached && cached.ts && (now - cached.ts) < CACHE_TTL && cached.articles?.length) {
-    // Fresh cache — skip API call
+  const cacheValid = cached && cached.ts && (now - cached.ts) < CACHE_TTL && Array.isArray(cached.articles) && cached.articles.length >= 1;
+
+  if (cacheValid) {
     articles = cached.articles;
     setBar(90); setStep('Loading cached briefing…');
     setTimeout(()=>{ finishLoad(true); }, 300);
   } else {
+    // Clear any stale/empty cache
+    lsDel(LS_ARTS);
     setBar(25); setStep('Briefing Claude on AI news...');
     await generate();
   }
@@ -944,7 +956,7 @@ async function callClaude(prompt, maxTokens=6000) {
       'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
     body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:maxTokens,messages:[{role:'user',content:prompt}]})
   });
-  if (!r.ok) throw new Error('API '+r.status);
+  if (!r.ok) throw new Error('API error ' + r.status + ': ' + (await r.text().catch(()=>'')));
   const d=await r.json(); return d.content[0].text;
 }
 
@@ -961,22 +973,67 @@ Rules: 1 featured:true, 3-4 per tag (ai,pm,tools,research,industry), hot:true ma
 
   try {
     const raw=await callClaude(prompt);
-    setBar(88); setStep('Parsing…');
+    setBar(88); setStep('Parsing articles…');
     let parsed;
     try { parsed=JSON.parse(raw); }
-    catch { const m=raw.match(/\{[\s\S]*\}/); if(!m) throw new Error('Parse failed'); parsed=JSON.parse(m[0]); }
-    articles=(parsed.articles||[]).map((a,i)=>({...a,id:a.id||'g'+i}));
-    if (articles.length&&!articles.some(a=>a.featured)) articles[0].featured=true;
-    // Cache with timestamp
+    catch { const m=raw.match(/\{[\s\S]*\}/); if(!m) throw new Error('Could not parse JSON from response'); parsed=JSON.parse(m[0]); }
+
+    const parsed_articles = (parsed.articles||[]).map((a,i)=>({...a,id:a.id||'g'+i}));
+
+    if (!parsed_articles.length) throw new Error('Claude returned 0 articles');
+
+    articles = parsed_articles;
+    if (!articles.some(a=>a.featured)) articles[0].featured=true;
+
+    // Only cache if we have real articles
     lsSet(LS_ARTS, {articles, ts: Date.now()});
     setBar(100); setStep('Ready!');
     setTimeout(()=>finishLoad(false), 380);
+
   } catch(e) {
-    setStep('Error: '+e.message);
-    const cached=lsGet(LS_ARTS,null);
-    if (cached?.articles) articles=cached.articles;
-    setTimeout(()=>finishLoad(false), 900);
+    console.error('Generate error:', e);
+    setBar(100); setStep('');
+    // Show error screen — don't silently show empty app
+    showGenerateError(e.message);
   }
+}
+
+function showGenerateError(msg) {
+  const l=document.getElementById('loader');
+  l.style.opacity='0';
+  setTimeout(()=>{
+    l.style.display='none';
+    document.getElementById('bottom-nav').style.display='block';
+    showTab('today');
+    startClock();
+    // Show error in the content area
+    document.getElementById('featured-slot').innerHTML = `
+      <div style="background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--accent3);
+        border-radius:var(--radius);padding:1.5rem;margin-bottom:1rem;">
+        <div style="font-family:'Space Mono',monospace;font-size:.52rem;color:var(--accent3);letter-spacing:.1em;text-transform:uppercase;margin-bottom:.5rem">
+          Generation Error
+        </div>
+        <div style="font-family:'DM Serif Display',serif;font-size:1.2rem;color:var(--txt);margin-bottom:.5rem">
+          Could not load your briefing
+        </div>
+        <div style="font-size:.76rem;color:var(--txt2);line-height:1.6;margin-bottom:1rem">${esc(msg)}</div>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap;">
+          <button onclick="retryGenerate()" style="padding:9px 18px;border-radius:10px;border:none;background:var(--accent);color:#0f1120;font-family:'DM Sans',sans-serif;font-size:.8rem;font-weight:700;cursor:pointer;">↺ Try Again</button>
+          <button onclick="forgotPin()" style="padding:9px 16px;border-radius:10px;border:1px solid var(--border2);background:transparent;color:var(--txt2);font-family:'DM Sans',sans-serif;font-size:.8rem;cursor:pointer;">Change API Key</button>
+        </div>
+      </div>`;
+    document.getElementById('article-grid').innerHTML='';
+    updateStats();
+  }, 480);
+}
+
+async function retryGenerate() {
+  document.getElementById('featured-slot').innerHTML='';
+  document.getElementById('loader').style.display='flex';
+  document.getElementById('loader').style.opacity='1';
+  lsDel(LS_ARTS);
+  setBar(20); setStep('Retrying…');
+  await generate();
 }
 
 function finishLoad(fromCache) {
