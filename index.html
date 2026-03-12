@@ -978,11 +978,13 @@ function repairJSON(raw) {
   throw new Error('Could not parse response as JSON');
 }
 
-// Safe URL — don't HTML-escape URLs (breaks href)
-function safeUrl(url) {
-  if (!url) return '#';
-  // Only allow http/https
-  return /^https?:\/\//i.test(url) ? url : '#';
+// Build a Google search URL for a headline + source
+function searchUrl(title, source) {
+  const q = encodeURIComponent(title + ' ' + (source||''));
+  return 'https://www.google.com/search?q=' + q;
+}
+function perplexityUrl(title) {
+  return 'https://www.perplexity.ai/search?q=' + encodeURIComponent(title);
 }
 
 async function generate() {
@@ -1165,9 +1167,7 @@ function renderFeatured() {
     <div class="card-actions">
       <button class="btn-read ${rd?'done':''}" onclick="toggleRead(${fi})">${rd?'✓ Read':'◯ Mark Read'}</button>
       <button class="btn-save ${sv?'done':''}" onclick="toggleSave(${fi})">${sv?'🔖 Saved':'🔖 Save'}</button>
-      <a class="btn-link" href="${safeUrl(a.link)}" target="_blank" rel="noopener">→</a>
-    </div>
-    <div class="card-meta" style="margin-top:.4rem">
+      <a class="btn-link" href="${searchUrl(a.title, a.source)}" target="_blank" rel="noopener">🔍 Search</a>
       <span>${esc(a.source)}</span><div class="meta-dot"></div><span>${esc(a.readTime)}</span>
       <div class="meta-dot"></div><span>${esc(a.dateLabel)}</span>
       ${a.hot?'<div class="meta-dot"></div><span style="color:var(--accent3)">🔥</span>':''}
@@ -1198,7 +1198,7 @@ function cardHTML(a,delay) {
     <div class="card-actions">
       <button class="btn-read ${rd?'done':''}" onclick="toggleRead(${i})">${rd?'✓ Read':'◯ Read'}</button>
       <button class="btn-save ${sv?'done':''}" onclick="toggleSave(${i})">${sv?'🔖':'🔖 Save'}</button>
-      <a class="btn-link" href="${safeUrl(a.link)}" target="_blank" rel="noopener">→</a>
+      <a class="btn-link" href="${searchUrl(a.title, a.source)}" target="_blank" rel="noopener">🔍</a>
     </div>
   </div>`;
 }
@@ -1226,7 +1226,7 @@ function savedCardHTML(a,delay) {
     <div class="card-meta"><span>${esc(a.dateLabel)}</span><div class="meta-dot"></div><span>${esc(a.readTime)}</span></div>
     <div class="card-actions">
       <button class="btn-unsave" onclick="unsaveById('${a.id}')">🔖 Saved</button>
-      <a class="btn-link" href="${safeUrl(a.link)}" target="_blank" rel="noopener">→</a>
+      <a class="btn-link" href="${searchUrl(a.title, a.source)}" target="_blank" rel="noopener">🔍</a>
     </div>
   </div>`;
 }
@@ -1288,7 +1288,8 @@ function buildModal(a,idx,fromSaved) {
   if (idx>=0) acts+=`<button class="modal-btn-primary" id="m-read" onclick="toggleRead(${idx})">${rd?'✓ Unread':'◯ Mark Read'}</button>`;
   if (!fromSaved) acts+=`<button class="modal-btn-save${sv?' done':''}" id="m-save" onclick="toggleSaveModal(${idx},'${a.id}')">${sv?'🔖 Saved':'🔖 Save'}</button>`;
   else acts+=`<button class="modal-btn-save done" onclick="unsaveById('${a.id}');closeModal()">🔖 Saved</button>`;
-  acts+=`<a class="modal-btn-link" href="${safeUrl(a.link)}" target="_blank" rel="noopener">↗ Full Article</a>`;
+  acts+=`<a class="modal-btn-link" href="${searchUrl(a.title, a.source)}" target="_blank" rel="noopener">G Search</a>`;
+  acts+=`<a class="modal-btn-link" href="${perplexityUrl(a.title)}" target="_blank" rel="noopener">⟡ Perplexity</a>`;
   acts+=`<button class="modal-btn-cancel" onclick="closeModal()">Close</button>`;
   document.getElementById('m-actions').innerHTML=acts;
   document.getElementById('modal').style.display='flex';
